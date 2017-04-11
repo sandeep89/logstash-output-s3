@@ -183,6 +183,32 @@ class LogStash::Outputs::S3 < LogStash::Outputs::Base
   # In some circonstances you need finer grained permission on subfolder, this allow you to disable the check at startup.
   config :validate_credentials_on_root_bucket, :validate => :boolean, :default => true
 
+  # Should Logstash ship metadata within event object? This will cause Logstash
+  # to ship any fields in the event (such as those created by grok) in the GELF
+  # messages. These will be sent as underscored "additional fields".
+  config :ship_metadata, :validate => :boolean, :default => true
+
+  # Ship tags within events. This will cause Logstash to ship the tags of an
+  # event as the field `\_tags`.
+  config :ship_tags, :validate => :boolean, :default => true
+
+  # Ignore these fields when `ship_metadata` is set. Typically this lists the
+  # fields used in dynamic values for GELF fields.
+  config :ignore_metadata, :validate => :array, :default => [ "@timestamp", "@version", "severity", "host", "source_host", "source_path", "short_message" ]
+
+  # The GELF custom field mappings. GELF supports arbitrary attributes as custom
+  # fields. This exposes that. Exclude the `_` portion of the field name
+  # e.g. `custom_fields => ['foo_field', 'some_value']`
+  # sets `_foo_field` = `some_value`.
+  config :custom_fields, :validate => :hash, :default => {}
+
+  # The GELF full message. Dynamic values like `%{foo}` are permitted here.
+  config :full_message, :validate => :string, :default => "%{message}"
+
+  # The GELF short message field name. If the field does not exist or is empty,
+  # the event message is taken instead.
+  config :short_message, :validate => :string, :default => "short_message"
+
   def register
     # I've move the validation of the items into custom classes
     # to prepare for the new config validation that will be part of the core so the core can
@@ -231,15 +257,84 @@ class LogStash::Outputs::S3 < LogStash::Outputs::Base
     events_and_encoded.each do |event, encoded|
       prefix_key = normalize_key(event.sprintf(@prefix))
       prefix_written_to << prefix_key
+      # We have to make our own hash here because GELF expects a hash
+      # with a specific format.
+      m = Hash.new
 
-      begin
-        @file_repository.get_file(prefix_key) { |file| file.write(encoded) }
-        # The output should stop accepting new events coming in, since it cannot do anything with them anymore.
-        # Log the error and rethrow it.
-      rescue Errno::ENOSPC => e
-        @logger.error("S3: No space left in temporary directory", :temporary_directory => @temporary_directory)
-        raise e
+      m["short_message"] = event.get("message")
+      if event.get(@short_message)
+        v = event.get(@short_message)
+        short_message = (v.is_a?(Array) && v.length == 1) ? v.first : v
+        short_message = short_message.to_s
+        if !short_message.empty?
+          m["short_message"] = short_message
+        end
       end
+
+      m["full_message"] = event.sprintf(@full_message)
+
+      m["host"] = event.sprintf(@sender)
+
+      if @ship_metadata
+        event.to_hash.each do |name, value|
+          next if value == nil
+          next if name == "message"
+
+          # Trim leading '_' in the event
+          name = name[1..-1] if name.start_with?('_')
+          name = "_id" if name == "id"  # "_id" is reserved, so use "__id"
+          if !value.nil? and !@ignore_metadata.include?(name)
+            if value.is_a?(Array)
+              m["_#{name}"] = value.join(', ')
+            elsif value.is_a?(Hash)
+              value.each do |hash_name, hash_value|
+                m["_#{name}_#{hash_name}"] = hash_value
+              end
+            else
+              # Non array values should be presented as-is
+              # https://logstash.jira.com/browse/LOGSTASH-113
+              m["_#{name}"] = value
+            end
+          end
+        end
+      end
+
+      if @ship_tags
+        m["_tags"] = event.get("tags").join(', ') if event.get("tags")
+      end
+
+      if @custom_fields
+        @custom_fields.each do |field_name, field_value|
+          m["_#{field_name}"] = field_value unless field_name == 'id'
+        end
+      end
+
+      # Probe severity array levels
+      level = nil
+      if @level.is_a?(Array)
+        @level.each do |value|
+          parsed_value = event.sprintf(value)
+          next if value.count('%{') > 0 and parsed_value == value
+
+          level = parsed_value
+          break
+        end
+      else
+        level = event.sprintf(@level.to_s)
+      end
+      m["level"] = (level.respond_to?(:downcase) && @level_map[level.downcase] || level).to_i
+
+      log_data = m.map{|k,v| "#{k}=#{v}"}.join('&')
+      log_data = log_data + "\n"
+      end
+        begin
+          @file_repository.get_file(prefix_key) { |file| file.write(log_data) }
+          # The output should stop accepting new events coming in, since it cannot do anything with them anymore.
+          # Log the error and rethrow it.
+        rescue Errno::ENOSPC => e
+          @logger.error("S3: No space left in temporary directory", :temporary_directory => @temporary_directory)
+          raise e
+        end
     end
 
     # Groups IO calls to optimize fstat checks
