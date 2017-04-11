@@ -309,32 +309,32 @@ class LogStash::Outputs::S3 < LogStash::Outputs::Base
         end
       end
 
-      # Probe severity array levels
-      level = nil
-      if @level.is_a?(Array)
-        @level.each do |value|
-          parsed_value = event.sprintf(value)
-          next if value.count('%{') > 0 and parsed_value == value
+      # # Probe severity array levels
+      # level = nil
+      # if @level.is_a?(Array)
+      #   @level.each do |value|
+      #     parsed_value = event.sprintf(value)
+      #     next if value.count('%{') > 0 and parsed_value == value
 
-          level = parsed_value
-          break
-        end
-      else
-        level = event.sprintf(@level.to_s)
-      end
-      m["level"] = (level.respond_to?(:downcase) && @level_map[level.downcase] || level).to_i
+      #     level = parsed_value
+      #     break
+      #   end
+      # else
+      #   level = event.sprintf(@level.to_s)
+      # end
+      # m["level"] = (level.respond_to?(:downcase) && @level_map[level.downcase] || level).to_i
 
       log_data = m.map{|k,v| "#{k}=#{v}"}.join('&')
       log_data = log_data + "\n"
+      
+      begin
+        @file_repository.get_file(prefix_key) { |file| file.write(log_data) }
+        # The output should stop accepting new events coming in, since it cannot do anything with them anymore.
+        # Log the error and rethrow it.
+      rescue Errno::ENOSPC => e
+        @logger.error("S3: No space left in temporary directory", :temporary_directory => @temporary_directory)
+        raise e
       end
-        begin
-          @file_repository.get_file(prefix_key) { |file| file.write(log_data) }
-          # The output should stop accepting new events coming in, since it cannot do anything with them anymore.
-          # Log the error and rethrow it.
-        rescue Errno::ENOSPC => e
-          @logger.error("S3: No space left in temporary directory", :temporary_directory => @temporary_directory)
-          raise e
-        end
     end
 
     # Groups IO calls to optimize fstat checks
