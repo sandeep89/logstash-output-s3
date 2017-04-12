@@ -308,27 +308,12 @@ class LogStash::Outputs::S3 < LogStash::Outputs::Base
           m["_#{field_name}"] = field_value unless field_name == 'id'
         end
       end
-
-      # # Probe severity array levels
-      # level = nil
-      # if @level.is_a?(Array)
-      #   @level.each do |value|
-      #     parsed_value = event.sprintf(value)
-      #     next if value.count('%{') > 0 and parsed_value == value
-
-      #     level = parsed_value
-      #     break
-      #   end
-      # else
-      #   level = event.sprintf(@level.to_s)
-      # end
-      # m["level"] = (level.respond_to?(:downcase) && @level_map[level.downcase] || level).to_i
-
-      log_data = m.map{|k,v| "#{k}=#{v}"}.join('&')
-      log_data = log_data + "\n"
-      
+      log_data = m.to_json
       begin
-        @file_repository.get_file(prefix_key) { |file| file.write(log_data) }
+        @file_repository.get_file(prefix_key) { |file| 
+          file.write(log_data) 
+          file.write("\n")
+        }
         # The output should stop accepting new events coming in, since it cannot do anything with them anymore.
         # Log the error and rethrow it.
       rescue Errno::ENOSPC => e
