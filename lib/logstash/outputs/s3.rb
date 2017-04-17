@@ -301,9 +301,9 @@ class LogStash::Outputs::S3 < LogStash::Outputs::Base
 
       if @ship_tags
         if event["tags"].is_a?(Array)
-          m["_tags"] = event["tags"].join(', ')
+          m["_tags"] = event.get("tags").join(', ')
         else
-          m["_tags"] = event["tags"] if event["tags"]
+          m["_tags"] = event.get("tags") if event.get("tags")
         end
       end
 
