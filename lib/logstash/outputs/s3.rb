@@ -300,8 +300,15 @@ class LogStash::Outputs::S3 < LogStash::Outputs::Base
       end
 
       if @ship_tags
-        m["_tags"] = event.get("tags").join(', ') if event.get("tags")
-      end
+        begin
+          m["_tags"] = event.get("tags").join(', ') if event.get("tags")
+          # The output should stop accepting new events coming in, since it cannot do anything with them anymore.
+          # Log the error and rethrow it.
+          rescue Errno::ENOSPC => e
+            @logger.error("unable to join tags for event", :temporary_directory => @temporary_directory)
+            raise e
+          end
+        end
 
       if @custom_fields
         @custom_fields.each do |field_name, field_value|

@@ -24,9 +24,14 @@ module LogStash
         end
 
         def upload_async(file, options = {})
-          @workers_pool.post do
-            LogStash::Util.set_thread_name("S3 output uploader, file: #{file.path}")
-            upload(file, options)
+          begin
+            @workers_pool.post do
+              LogStash::Util.set_thread_name("S3 output uploader, file: #{file.path}")
+              upload(file, options)
+            end
+          rescue => e
+            logger.error("aync uploading failed", :exception => e.class, :message => e.message, :path => file.path, :backtrace => e.backtrace)
+            retry
           end
         end
 
